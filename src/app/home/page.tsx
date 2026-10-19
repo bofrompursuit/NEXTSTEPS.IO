@@ -28,6 +28,7 @@ export default function Home() {
   const [chips, setChips] = useState<string[]>([]);
   const [reward, setReward] = useState<RewardResult | null>(null);
   const [presenting, setPresenting] = useState(-1);
+  const [tab, setTab] = useState<"chat" | "plan">("chat");
   const logRef = useRef<HTMLDivElement>(null);
 
   const voice = useVoice((t) => send(t));
@@ -103,6 +104,7 @@ export default function Home() {
       const name = s.profile.name ? `${s.profile.name}! ` : "";
       // eslint-disable-next-line react-hooks/set-state-in-effect -- start the card-by-card plan presentation once
       setPresenting(0);
+      setTab("plan"); // on phones, show the plan while Peaches presents it
       // Peaches presents the plan card by card; each card appears as she talks about it.
       const lines = [
         `Your habits: ${plan.habits.map((h) => h.label.replace(/[“”]/g, "")).join(", ")}.`,
@@ -140,7 +142,7 @@ export default function Home() {
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-  }, [s.chat.length, card]);
+  }, [s.chat.length, card, tab]);
 
   // Space or Cmd/Ctrl+K toggles the mic.
   useEffect(() => {
@@ -201,6 +203,7 @@ export default function Home() {
     const msg = raw.trim();
     if (!msg || busy) return;
     setText("");
+    setTab("chat");
     clearNudge();
     nudged.current = false;
     voice.stopSpeaking();
@@ -247,6 +250,18 @@ export default function Home() {
   }
 
   if (!hydrated || !s.onboarded || !s.signedIn) return null;
+
+  const header = (
+    <header className="flex items-center justify-between gap-2 py-2">
+      <Logo />
+      <div className="flex items-center gap-2">
+        <span className="chip !min-h-9 !px-3 text-sm" aria-label={`${s.rewards.points} Peach Points, ${s.rewards.streakDays}-day streak`}>
+          🍑 {s.rewards.points} · 🔥 {s.rewards.streakDays}
+        </span>
+        <Settings />
+      </div>
+    </header>
+  );
 
   const upcoming = s.calendar.filter((c) => new Date(c.start).getTime() > Date.now() - 3 * 3_600_000).sort((a, b) => a.start.localeCompare(b.start));
   const past = s.calendar.filter((c) => new Date(c.start).getTime() <= Date.now() - 3 * 3_600_000);
@@ -326,7 +341,7 @@ export default function Home() {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl px-4 pt-[max(0.75rem,env(safe-area-inset-top))] lg:grid lg:grid-cols-[minmax(360px,420px)_1fr] lg:gap-8">
+    <div className="mx-auto flex h-dvh max-w-6xl flex-col overflow-hidden px-3 pt-[max(0.5rem,env(safe-area-inset-top))] sm:px-4 lg:grid lg:h-auto lg:min-h-dvh lg:grid-cols-[minmax(360px,420px)_1fr] lg:gap-8 lg:overflow-visible lg:pt-0">
       {closing && (
         <div className="fixed inset-0 z-[60] grid place-items-center bg-[linear-gradient(160deg,var(--bg-1),var(--bg-2))]" role="alert">
           <p className="pop px-6 text-center text-5xl font-extrabold tracking-tight sm:text-7xl" style={{ animation: "pop .5s both, flash 0.8s ease-in-out 0.5s 2" }}>
@@ -336,20 +351,24 @@ export default function Home() {
       )}
       {reward && <RewardToast points={reward.pointsAdded} badge={reward.newBadge?.label} line={reward.line} onDone={() => setReward(null)} />}
 
-      {/* Left: Peaches + conversation (sticky on desktop) */}
-      <aside className="lg:sticky lg:top-0 lg:flex lg:h-dvh lg:flex-col lg:py-4">
-        <header className="flex items-center justify-between py-2">
-          <Logo />
-          <div className="flex items-center gap-2">
-            <span className="chip !min-h-9 text-sm" aria-label={`${s.rewards.points} Peach Points, ${s.rewards.streakDays}-day streak`}>
-              🍑 {s.rewards.points} · 🔥 {s.rewards.streakDays}
-            </span>
-            <Settings />
-          </div>
-        </header>
+      {/* Mobile: shared header + Chat / Plan tabs */}
+      <div className="relative z-40 shrink-0 lg:hidden">
+        {header}
+        <div role="tablist" aria-label="View" className="mt-1 flex gap-2 rounded-full bg-white/30 p-1 dark:bg-white/10">
+          {(["chat", "plan"] as const).map((t) => (
+            <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={`min-h-10 flex-1 rounded-full text-sm font-bold transition ${tab === t ? "bg-gradient-to-r from-blue to-sky-400 text-white shadow" : "text-ink-soft"}`}>
+              {t === "chat" ? "Chat with Peaches" : "My plan"}
+            </button>
+          ))}
+        </div>
+      </div>
 
-        <section className="pill rim-peach mt-3 flex flex-col p-4 lg:min-h-0 lg:flex-1" aria-label="Conversation with Peaches">
-          <div className="flex items-center gap-3">
+      {/* Left: Peaches + conversation (sticky on desktop) */}
+      <aside className={`${tab === "chat" ? "flex" : "hidden"} min-h-0 flex-1 flex-col pb-[max(0.5rem,env(safe-area-inset-bottom))] lg:sticky lg:top-0 lg:flex lg:h-dvh lg:py-4`}>
+        <div className="relative z-40 hidden lg:block">{header}</div>
+
+        <section className="pill rim-peach mt-2 flex min-h-0 flex-1 flex-col p-3 sm:p-4 lg:mt-3" aria-label="Conversation with Peaches">
+          <div className="flex shrink-0 items-center gap-3">
             <Orb size={56} state={busy ? "thinking" : voice.state} />
             <div className="min-w-0">
               <p className="font-extrabold">Peaches</p>
@@ -359,7 +378,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div ref={logRef} className="no-scrollbar mt-3 flex max-h-[42dvh] flex-col gap-2 overflow-y-auto lg:max-h-none lg:flex-1" aria-live="polite">
+          <div ref={logRef} className="no-scrollbar mt-3 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain scroll-smooth" aria-live="polite">
             {s.chat.slice(-12).map((m, i) => (
               <p
                 key={i}
@@ -443,10 +462,10 @@ export default function Home() {
             )}
           </div>
 
-          {/* Dock: bottom thumb zone on mobile, inside the panel on desktop */}
-          <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/40 bg-[var(--card)] px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl lg:static lg:mt-3 lg:border-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none">
+          {/* Controls stay in flow below the feed, so they never cover messages */}
+          <div className="mt-3 shrink-0 border-t border-white/40 pt-3 dark:border-white/10">
             {chips.length > 0 && (
-              <div className="no-scrollbar -mx-1 mb-3 flex gap-2 overflow-x-auto px-1 pb-1">
+              <div className="no-scrollbar -mx-1 mb-2 flex gap-2 overflow-x-auto whitespace-nowrap px-1 pb-2">
                 {chips.map((c) => (
                   <button key={c} className="chip shrink-0 text-sm" onClick={() => send(c)} disabled={busy}>
                     {c}
@@ -455,13 +474,13 @@ export default function Home() {
               </div>
             )}
             <form
-              className="flex items-center gap-3"
+              className="flex items-center gap-2 sm:gap-3"
               onSubmit={(e) => {
                 e.preventDefault();
                 send(text);
               }}
             >
-              <input className="field flex-1" value={text} onChange={(e) => setText(e.target.value)} placeholder={voice.supported.stt ? "Ask Peaches anything… (Space to talk)" : "Ask Peaches anything…"} aria-label="Message Peaches" />
+              <input className="field min-w-0 flex-1" value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask Peaches anything…" aria-label="Message Peaches" />
               <MicButton state={voice.state} disabled={!voice.supported.stt || busy} onPress={() => (voice.state === "listening" ? voice.stopListening() : voice.listen())} />
             </form>
             {lastPeaches && (
@@ -474,7 +493,8 @@ export default function Home() {
       </aside>
 
       {/* Right: the plan */}
-      <main className="flex flex-col gap-5 pb-56 pt-5 lg:py-6 lg:pb-10">
+      <main className={`${tab === "plan" ? "flex" : "hidden"} min-h-0 flex-1 flex-col lg:flex lg:py-6`}>
+        <div className="no-scrollbar flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overscroll-contain pb-4 pt-3 lg:overflow-visible lg:pb-10 lg:pt-0">
         <nav aria-label="Program progress" className="pill rim-blue flex items-center gap-2 p-2">
           {[1, 2, 3, 4].map((w) => (
             <div key={w} className={`flex-1 rounded-2xl px-2 py-2 text-center text-sm font-bold ${w === week ? "bg-gradient-to-r from-blue to-sky-400 text-white" : w < week ? "bg-mint/40" : "text-ink-soft"}`} aria-current={w === week ? "step" : undefined}>
@@ -577,6 +597,26 @@ export default function Home() {
             ))}
           </section>
         )}
+        </div>
+
+        {/* Mobile: live caption + mic, in flow at the bottom of the plan view */}
+        <div className="shrink-0 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 lg:hidden">
+          <div className="pill rim-peach flex items-center gap-3 p-2 pl-3">
+            <button className="min-w-0 flex-1 text-left" onClick={() => setTab("chat")} aria-label="Open chat with Peaches">
+              <span className="block text-xs font-bold text-ink-soft">{voice.state === "speaking" ? "Peaches is speaking…" : "Peaches"}</span>
+              <span className="line-clamp-2 text-sm">{lastPeaches ?? "Ask me anything about your plan"}</span>
+            </button>
+            <MicButton
+              state={voice.state}
+              disabled={!voice.supported.stt || busy}
+              onPress={() => {
+                setTab("chat");
+                if (voice.state === "listening") voice.stopListening();
+                else voice.listen();
+              }}
+            />
+          </div>
+        </div>
       </main>
     </div>
   );
@@ -611,12 +651,29 @@ function DraftCard({ draft, onSent }: { draft: Draft; onSent: () => void }) {
 function Settings() {
   const s = useAppState();
   const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
   return (
-    <details className="relative">
-      <summary className="btn-ghost !min-h-9 cursor-pointer list-none text-sm" aria-label="Settings">
+    <div ref={ref} className="relative z-50">
+      <button className="btn-ghost !min-h-9 !px-3 text-sm" aria-label="Settings" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((o) => !o)}>
         ⚙︎
-      </summary>
-      <div className="pill rim-blue absolute right-0 z-50 mt-2 flex w-60 flex-col gap-2 p-3 text-sm">
+      </button>
+      {open && (
+      <div className="absolute right-0 top-full z-50 mt-2 w-60">
+      <div role="menu" className="pill rim-blue flex flex-col gap-2 !bg-[var(--card-strong)] p-3 text-sm shadow-2xl">
         <label className="flex min-h-11 items-center justify-between gap-2 font-semibold">
           Peaches speaks aloud
           <input type="checkbox" className="h-5 w-5 accent-blue-600" checked={s.voiceEnabled} onChange={(e) => setState({ voiceEnabled: e.target.checked })} />
@@ -657,6 +714,8 @@ function Settings() {
           Delete my data
         </button>
       </div>
-    </details>
+      </div>
+      )}
+    </div>
   );
 }
