@@ -141,5 +141,9 @@ export type PeachesResponse = {
   stats?: Stats;
   chips?: string[];
   crisis?: boolean;
+  /** User asked to close the app */
+  close?: boolean;
+  /** Spoken after the main reply, e.g. offering a reminder */
+  followUp?: string;
   source: "nlp" | "claude";
 };

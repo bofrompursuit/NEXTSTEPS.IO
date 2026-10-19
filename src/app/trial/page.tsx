@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Logo, Orb, Sparkle } from "@/components/ui";
 import { planFor } from "@/lib/plans";
 import { PRICES, purchase, restorePurchases, supportsApplePay } from "@/lib/purchases";
-import { useAppState, useHydrated } from "@/lib/store";
+import { setState, useAppState, useHydrated } from "@/lib/store";
 import { useVoice } from "@/lib/voice";
 
 export default function Trial() {
@@ -20,8 +21,8 @@ export default function Trial() {
   const plan = useMemo(() => planFor(s.profile), [s.profile]);
 
   useEffect(() => {
-    if (hydrated && !s.onboarded) router.replace("/start");
-  }, [hydrated, s.onboarded, router]);
+    if (hydrated && (!s.onboarded || !s.signedIn)) router.replace(s.onboarded ? "/" : "/start");
+  }, [hydrated, s.onboarded, s.signedIn, router]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- browser capability check
     setApplePay(supportsApplePay());
@@ -87,6 +88,15 @@ export default function Trial() {
               </button>
             </div>
           )}
+          <button
+            className="text-sm font-bold text-ink-soft underline underline-offset-4"
+            onClick={() => {
+              setState({ paywallSkipped: true });
+              router.push("/home");
+            }}
+          >
+            Skip for now, just show me my plan
+          </button>
           <p className="text-xs text-ink-soft">Demo build: checkout is simulated and you won&apos;t be charged. Prices are placeholders.</p>
           <nav className="flex gap-4 text-xs font-semibold underline underline-offset-2">
             <button
@@ -97,8 +107,8 @@ export default function Trial() {
             >
               Restore purchases
             </button>
-            <a href="#terms">Terms</a>
-            <a href="#privacy">Privacy</a>
+            <Link href="/legal#terms">Terms</Link>
+            <Link href="/legal#privacy">Privacy</Link>
           </nav>
           {note && <p className="text-xs">{note}</p>}
         </div>

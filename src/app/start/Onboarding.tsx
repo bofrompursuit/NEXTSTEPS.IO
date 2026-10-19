@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Logo, MicButton, Orb, Sparkle } from "@/components/ui";
-import { setState, useAppState, EMPTY_PROFILE } from "@/lib/store";
+import { logIn, setState, useAppState, EMPTY_PROFILE } from "@/lib/store";
 import { PRESET_TRANSITIONS, confirmLine, customTransition } from "@/lib/transitions";
 import type { Profile, Transition } from "@/lib/types";
 import { useVoice } from "@/lib/voice";
@@ -61,7 +61,10 @@ export default function Onboarding() {
   const [startedAt] = useState(() => Date.now());
 
   useEffect(() => {
-    if (params.get("login") && app.onboarded) router.replace("/home");
+    if (params.get("login") && app.onboarded) {
+      logIn();
+      router.replace("/home");
+    }
   }, [params, app.onboarded, router]);
 
   const prompts: Record<Step, string> = {
@@ -143,7 +146,7 @@ export default function Onboarding() {
 
   const finish = (verified: boolean) => {
     const profile = { ...p, phoneVerified: verified, smsOptIn: verified && p.smsOptIn };
-    setState({ profile, onboarded: true, planStartedAt: new Date().toISOString(), chat: [], lastEvents: [] });
+    setState({ profile, onboarded: true, signedIn: true, paywallSkipped: false, entitlement: "none", planStartedAt: new Date().toISOString(), chat: [], lastEvents: [] });
     if (typeof window !== "undefined") console.info(`onboarding completed in ${Math.round((Date.now() - startedAt) / 1000)}s`);
     router.push("/trial");
   };

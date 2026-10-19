@@ -5,15 +5,15 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CalendarExport, EventCard, Logo, MicButton, Orb, RewardToast, Sparkle } from "@/components/ui";
 import { reminderTimes } from "@/lib/calendar";
-import { CRISIS_REPLY, detectCrisis, isAffirmative, isDecline, runIntent, suggestedChips } from "@/lib/intents";
+import { CLOSE_APP, CRISIS_REPLY, detectCrisis, isAffirmative, isDecline, runIntent, suggestedChips } from "@/lib/intents";
 import { planFor } from "@/lib/plans";
 import { award, type RewardResult } from "@/lib/rewards";
-import { getState, programWeek, resetState, setState, useAppState, useHydrated } from "@/lib/store";
+import { getState, logOut, programWeek, resetState, setState, useAppState, useHydrated } from "@/lib/store";
 import { formatShort, formatWhen, weekdayName } from "@/lib/time";
 import type { ChatTurn, Draft, EventItem, PeachesRequest, PeachesResponse, Proposal, Stats } from "@/lib/types";
 import { useVoice } from "@/lib/voice";
 
-type Card = { events?: EventItem[]; proposal?: Proposal; draft?: Draft; stats?: Stats; added?: EventItem };
+type Card = { events?: EventItem[]; proposal?: Proposal; draft?: Draft; stats?: Stats; added?: EventItem; sms?: { body: string; sendAt: string } };
 
 export default function Home() {
   const router = useRouter();
@@ -31,20 +31,63 @@ export default function Home() {
   const logRef = useRef<HTMLDivElement>(null);
 
   const voice = useVoice((t) => send(t));
+  const [closing, setClosing] = useState<string | null>(null);
+  const nudgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nudged = useRef(false);
+  const pendingProposal = useRef(false);
+
+  const clearNudge = () => {
+    if (nudgeTimer.current) clearTimeout(nudgeTimer.current);
+    nudgeTimer.current = null;
+  };
+
+  /** Peaches speaks; new lines interrupt unless queued, so speech never overlaps. */
   const say = useCallback(
-    (reply: string) => {
+    (reply: string, opts: { queue?: boolean; nudge?: boolean; onDone?: () => void } = {}) => {
+      if (!reply) return;
+      clearNudge();
       setState((x) => ({ chat: [...x.chat, { role: "peaches" as const, text: reply }].slice(-40) }));
-      voice.speak(reply, getState().voiceEnabled);
+      voice.speak(reply, getState().voiceEnabled, {
+        queue: opts.queue,
+        onDone: () => {
+          opts.onDone?.();
+          // About 10 seconds after Peaches finishes, ask what's next (once per pause).
+          if (opts.nudge === false) return;
+          clearNudge();
+          nudgeTimer.current = setTimeout(() => {
+            if (!alive.current || nudged.current || pendingProposal.current) return;
+            nudged.current = true;
+            setChips((c) => [...c.filter((x) => x !== "Close app").slice(0, 3), "Close app"]);
+            say("So, what's your next step?", { nudge: false });
+          }, 10_000);
+        },
+      });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [voice],
   );
+
+  const closeApp = () => {
+    clearNudge();
+    voice.stopSpeaking();
+    const cat = getState().profile.transition?.category;
+    const line = cat === "health" ? "Proud of you already!" : "You're doing great!!!";
+    setClosing(line);
+    voice.speak(line, getState().voiceEnabled);
+    setState({ resumeNext: true });
+    setTimeout(() => {
+      window.close(); // works for installed/script-opened windows; otherwise show the closed screen
+      router.replace("/closed");
+    }, 2600);
+  };
 
   // Redirect if not onboarded / not subscribed.
   useEffect(() => {
     if (!hydrated) return;
     if (!s.onboarded) router.replace("/start");
-    else if (s.entitlement === "none") router.replace("/trial");
-  }, [hydrated, s.onboarded, s.entitlement, router]);
+    else if (!s.signedIn) router.replace("/");
+    else if (s.entitlement === "none" && !s.paywallSkipped) router.replace("/trial");
+  }, [hydrated, s.onboarded, s.signedIn, s.entitlement, s.paywallSkipped, router]);
 
   // Greeting: first visit presents the plan; later days pick up where you left off.
   const greeted = useRef(false);
@@ -52,26 +95,48 @@ export default function Home() {
     if (!hydrated || greeted.current || !s.onboarded) return;
     greeted.current = true;
     const today = new Date().toISOString().slice(0, 10);
-    const returning = s.lastVisit && s.lastVisit !== today && s.chat.length > 0;
-    setState({ lastVisit: today });
+    const returning = (s.resumeNext || (s.lastVisit && s.lastVisit !== today)) && s.chat.length > 0;
+    setState({ lastVisit: today, resumeNext: false });
     const ctx = { profile: s.profile, context: { calendar: s.calendar } } as Pick<PeachesRequest, "profile" | "context">;
     setChips(suggestedChips(ctx));
     if (s.chat.length === 0) {
       const name = s.profile.name ? `${s.profile.name}! ` : "";
       // eslint-disable-next-line react-hooks/set-state-in-effect -- start the card-by-card plan presentation once
       setPresenting(0);
-      say(`Welcome, ${name}${plan.welcome} Here's your plan for the next four weeks. Tap any card to skip ahead.`);
+      // Peaches presents the plan card by card; each card appears as she talks about it.
+      const lines = [
+        `Your habits: ${plan.habits.map((h) => h.label.replace(/[“”]/g, "")).join(", ")}.`,
+        `Social events to go to: ${plan.socialEvents.join("; ")}.`,
+        `For your head: ${plan.mentalHygiene.join(", and ")}. Your mantra: ${plan.mantra}`,
+        `People to reach out to: ${plan.mentors.join("; ")}. And resources: ${plan.resources.join(", ")}.`,
+      ];
+      say(`Welcome, ${name}${plan.welcome} Here's your plan for the next four weeks.`, { nudge: false, onDone: () => setPresenting(1) });
+      lines.forEach((l, i) => say(l, { queue: true, nudge: i === lines.length - 1, onDone: () => setPresenting(i + 2) }));
     } else if (returning) {
       say(`Welcome back${s.profile.name ? `, ${s.profile.name}` : ""}! Let's pick up where you left off.`);
+    } else {
+      say(`Hey${s.profile.name ? ` ${s.profile.name}` : ""}! ${plan.welcome} What's your next step?`);
     }
   }, [hydrated, s, plan.welcome, say]);
 
-  // Advance the plan presentation.
+  // Without voice the presentation advances on a timer.
   useEffect(() => {
-    if (presenting < 0 || presenting > 3) return;
+    if (presenting < 0 || presenting > 3 || s.voiceEnabled) return;
     const t = setTimeout(() => setPresenting((p) => p + 1), 2200);
     return () => clearTimeout(t);
-  }, [presenting]);
+  }, [presenting, s.voiceEnabled]);
+
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    pendingProposal.current = !!card.proposal;
+  }, [card.proposal]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
@@ -80,7 +145,7 @@ export default function Home() {
   // Space or Cmd/Ctrl+K toggles the mic.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing = (e.target as HTMLElement)?.closest("input, textarea, select, [contenteditable]");
+      const typing = (e.target as HTMLElement)?.closest("input, textarea, select, button, a, summary, [contenteditable]");
       if ((e.key === "k" && (e.metaKey || e.ctrlKey)) || (e.code === "Space" && !typing)) {
         e.preventDefault();
         if (voice.state === "listening") voice.stopListening();
@@ -107,9 +172,9 @@ export default function Home() {
         calendar: [...x.calendar.filter((c) => c.eventId !== e.id), { eventId: e.id, title: e.name, start: e.start, durationMin: e.durationMin, location: e.meetingSpot, addedAt: new Date().toISOString() }],
         reminders: texts
           ? [
-              ...x.reminders,
+              ...x.reminders.filter((r) => r.eventId !== e.id),
               ...reminderTimes(e).map((at, i) => ({
-                id: `${e.id}-${i}`,
+                id: `${e.id}-${i}-${Date.now()}`,
                 eventId: e.id,
                 sendAt: at,
                 channel: "sms" as const,
@@ -123,10 +188,10 @@ export default function Home() {
       say(texts ? `Done! It's on your calendar and I'll text you ${dayBefore}.` : `Done! It's on your calendar. Turn on texts in settings and I'll remind you.`);
       const first = !getState().rewards.badges.some((b) => b.id === "first-step");
       const r = grant("calendarAdd", first ? `That's how it begins. ${weekdayName(e.start)}-you is going to be proud.` : undefined);
-      setTimeout(() => voice.speak(r.line, getState().voiceEnabled), 2600);
+      say(r.line, { queue: true });
     } else {
       setState((x) => ({ reminders: [...x.reminders, { id: `r-${Date.now()}`, body: p.body, sendAt: p.sendAt, channel: "sms" }] }));
-      setCard({});
+      setCard((c) => ({ draft: c.draft, stats: c.stats, sms: { body: p.body, sendAt: p.sendAt } }));
       say(`Done! I'll text you ${formatWhen(p.sendAt)}.`);
     }
     setChips(suggestedChips({ profile: getState().profile, context: { calendar: getState().calendar } } as PeachesRequest));
@@ -136,6 +201,8 @@ export default function Home() {
     const msg = raw.trim();
     if (!msg || busy) return;
     setText("");
+    clearNudge();
+    nudged.current = false;
     voice.stopSpeaking();
     const st = getState();
     const history: ChatTurn[] = [...st.chat, { role: "user", text: msg }];
@@ -150,6 +217,7 @@ export default function Home() {
       }
     }
     if (detectCrisis(msg)) return say(CRISIS_REPLY);
+    if (CLOSE_APP.test(msg)) return closeApp();
 
     const req: PeachesRequest = {
       messages: history.slice(-12),
@@ -172,11 +240,13 @@ export default function Home() {
     }
     if (res.events?.length) setState({ lastEvents: res.events });
     setCard({ events: res.events, proposal: res.proposal, draft: res.draft, stats: res.stats });
+    if (res.close) return closeApp();
     if (res.chips) setChips(res.chips);
-    say(res.reply);
+    say(res.reply, { nudge: !res.followUp });
+    if (res.followUp) say(res.followUp, { queue: true });
   }
 
-  if (!hydrated || !s.onboarded) return null;
+  if (!hydrated || !s.onboarded || !s.signedIn) return null;
 
   const upcoming = s.calendar.filter((c) => new Date(c.start).getTime() > Date.now() - 3 * 3_600_000).sort((a, b) => a.start.localeCompare(b.start));
   const past = s.calendar.filter((c) => new Date(c.start).getTime() <= Date.now() - 3 * 3_600_000);
@@ -257,6 +327,13 @@ export default function Home() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 pt-[max(0.75rem,env(safe-area-inset-top))] lg:grid lg:grid-cols-[minmax(360px,420px)_1fr] lg:gap-8">
+      {closing && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-[linear-gradient(160deg,var(--bg-1),var(--bg-2))]" role="alert">
+          <p className="pop px-6 text-center text-5xl font-extrabold tracking-tight sm:text-7xl" style={{ animation: "pop .5s both, flash 0.8s ease-in-out 0.5s 2" }}>
+            {closing}
+          </p>
+        </div>
+      )}
       {reward && <RewardToast points={reward.pointsAdded} badge={reward.newBadge?.label} line={reward.line} onDone={() => setReward(null)} />}
 
       {/* Left: Peaches + conversation (sticky on desktop) */}
@@ -329,9 +406,20 @@ export default function Home() {
             {card.added && (
               <div className="pill rim-mint flex flex-col gap-3 p-4">
                 <p className="font-bold">✓ On your calendar: {card.added.name}</p>
+                {s.reminders.filter((r) => r.eventId === card.added?.id).map((r) => (
+                  <p key={r.id} className="rounded-2xl bg-mint/25 px-3 py-2 text-sm">
+                    📱 Text scheduled {formatShort(r.sendAt)}: “{r.body}”
+                  </p>
+                ))}
                 <p className="text-sm text-ink-soft">Also add it to your phone’s calendar:</p>
                 <CalendarExport e={card.added} />
               </div>
+            )}
+
+            {card.sms && (
+              <p className="pill rim-mint px-4 py-3 text-sm">
+                📱 Text scheduled {formatShort(card.sms.sendAt)}: “{card.sms.body}”
+              </p>
             )}
 
             {card.draft && <DraftCard draft={card.draft} onSent={() => grant("friendInvite", "Running's better together. Nice move!")} />}
@@ -394,6 +482,13 @@ export default function Home() {
             </div>
           ))}
         </nav>
+
+        {s.entitlement === "none" && (
+          <Link href="/trial" className="pill rim-butter flex items-center justify-between gap-3 p-4 font-semibold">
+            <span>You’re on the free preview. Start your free month to unlock reminders and the full program.</span>
+            <span className="btn-primary !min-h-10 shrink-0 text-sm">Start free</span>
+          </Link>
+        )}
 
         <section className="pill rim-peach p-5">
           <p className="text-sm font-bold uppercase tracking-wide text-coral">
@@ -529,6 +624,15 @@ function Settings() {
         <Link href="/pro" className="btn-ghost">
           Upgrade to Pro
         </Link>
+        <button
+          className="btn-ghost"
+          onClick={() => {
+            logOut();
+            router.replace("/");
+          }}
+        >
+          Log out
+        </button>
         <button
           className="btn-ghost"
           onClick={() => {

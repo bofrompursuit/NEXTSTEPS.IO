@@ -65,12 +65,44 @@ function friendDraft(name: string, req: PeachesRequest) {
   return { to: name, body };
 }
 
+const NUM = ["zero", "one", "two", "three", "four", "five"];
+
+function spokenList(events: EventItem[]): string {
+  const parts = events.map((e) => `${e.name}, ${formatWhen(e.start)}`);
+  return parts.length > 1 ? `${parts.slice(0, -1).join("; ")}; and ${parts.at(-1)}` : parts[0] ?? "";
+}
+
+function describe(e: EventItem): string {
+  const where = e.meetingSpot.split(",")[0];
+  return `${e.name}, ${formatWhen(e.start)} at ${where}${e.beginnerFriendly ? ". It's beginner-friendly" : ""}${e.pace ? `, ${e.pace.split(",")[0].toLowerCase()} pace` : ""}`;
+}
+
+function nextReminder(req: PeachesRequest, body: (title: string) => string) {
+  const next = req.context.calendar.filter((c) => new Date(c.start).getTime() > Date.now()).sort((a, b) => a.start.localeCompare(b.start))[0];
+  if (!next) return undefined;
+  const sendAt = new Date(Math.max(Date.now() + 15 * 60_000, new Date(next.start).getTime() - 24 * 3_600_000)).toISOString();
+  return { next, proposal: { kind: "send_sms_reminder" as const, body: body(next.title), sendAt } };
+}
+
+export const CLOSE_APP = /\b(close( the)? app|close it|i'?m done|that'?s all|bye|goodbye|see you|exit|quit)\b/i;
+
 export function runIntent(req: PeachesRequest): PeachesResponse | null {
   const last = req.messages.filter((m) => m.role === "user").at(-1)?.text.trim() ?? "";
   if (!last) return null;
   const t = last.toLowerCase();
 
   if (detectCrisis(last)) return { reply: CRISIS_REPLY, crisis: true, source: "nlp" };
+
+  if (CLOSE_APP.test(t)) return { reply: "", close: true, source: "nlp" };
+
+  if (/\b(what('?s| is| are)? (my |the )?next( step)?s?|what should i do|what now|next step)\b/.test(t) && !/\b(run|event|meetup|club)\b/.test(t)) {
+    const chips = suggestedChips(req);
+    return {
+      reply: `Here's what I'd do next: ${chips[0].toLowerCase()}. Or ${chips[1].toLowerCase()}. Which one?`,
+      chips: [...chips, "Close app"],
+      source: "nlp",
+    };
+  }
 
   // check_stats
   if (/\b(stats|progress|streak|points|how am i doing|my numbers|badges)\b/.test(t)) {
@@ -81,6 +113,10 @@ export function runIntent(req: PeachesRequest): PeachesResponse | null {
         s.upcoming.length ? `Next up: ${s.upcoming[0].title}, ${formatWhen(s.upcoming[0].start)}.` : "Let's get something on the calendar."
       }`,
       stats: s,
+      ...(() => {
+        const r = nextReminder(req, (title) => `Peaches here 🍑 ${title} is coming up. You've got this! Reply STOP to opt out.`);
+        return r && req.profile.phoneVerified ? { proposal: r.proposal, followUp: `Want me to text you a reminder before ${r.next.title}?` } : {};
+      })(),
       source: "nlp",
     };
   }
@@ -93,29 +129,42 @@ export function runIntent(req: PeachesRequest): PeachesResponse | null {
     return {
       reply: `Here's a text for ${name}. Edit it if you like, then send it from your phone. I never message anyone for you.`,
       draft: friendDraft(name, req),
+      ...(req.profile.phoneVerified
+        ? {
+            proposal: {
+              kind: "send_sms_reminder" as const,
+              body: `Peaches here 🍑 Did ${name} reply? Nudge them about your run! Reply STOP to opt out.`,
+              sendAt: new Date(Date.now() + 24 * 3_600_000).toISOString(),
+            },
+            followUp: `Want me to text you tomorrow to check if ${name} replied?`,
+          }
+        : {}),
       source: "nlp",
     };
   }
 
   // find_events
   const wantsEvents =
-    /\b(find|search|look|show|any|get|recommend|suggest)\b/.test(t) &&
+    /^(please |can you |could you |hey peaches,? )*(find|search|look for|show|get|recommend|suggest)\b/.test(t) &&
     /\b(run|runs|running|club|clubs|5k|event|events|meetup|meetups|group|class|panel|something)\b/.test(t);
-  const wantsAnother = /\b(another|next week|more|other)\b/.test(t) && /\b(run|event|meetup|one)\b/.test(t);
+  const wantsAnother =
+    /\b(another|next|more|other|else|different)\b/.test(t) &&
+    /\b(run|runs|event|events|meetup|meetups|club|one|option|options|thing|something|recommendation|recommendations|week)\b/.test(t);
 
   if (wantsEvents || wantsAnother) {
     const category = eventCategory(t) ?? defaultCategory(req);
     const noun = category === "running" ? "run" : category === "career" ? "event" : "plan";
 
     if (wantsAnother || /\bnext week\b/.test(t)) {
-      const booked = new Set(req.context.calendar.map((c) => c.eventId));
-      const events = findEvents({ category, when: "next_week", beginnerOnly: true, limit: 3 }).filter(
-        (e) => !booked.has(e.id),
-      );
+      // Prefer clubs the user hasn't booked yet, so "another" really is a different one.
+      const booked = new Set(req.context.calendar.map((c) => c.title));
+      const all = findEvents({ category, when: "next_week", beginnerOnly: true, limit: 6 });
+      const fresh = all.filter((e) => !booked.has(e.name));
+      const events = (fresh.length ? fresh : all).slice(0, 3);
       const pick = events[0];
       if (!pick) return { reply: `I couldn't find another ${noun} next week. Want me to look further out?`, source: "nlp" };
       return {
-        reply: `Next week there's ${pick.name}, ${formatWhen(pick.start)}. Want me to add it?`,
+        reply: `Here's another one: ${describe(pick)}.${events.length > 1 ? ` I also found ${events.slice(1).map((e) => e.name).join(" and ")}.` : ""} Want me to add ${pick.name}?`,
         events,
         proposal: { kind: "add_to_calendar", event: pick, withReminders: true },
         source: "nlp",
@@ -131,7 +180,7 @@ export function runIntent(req: PeachesRequest): PeachesResponse | null {
           ? "a beginner 5K social run"
           : pick.name;
       return {
-        reply: `There's ${label} ${formatWhen(pick.start)}. Want me to add it?`,
+        reply: `There's ${label} ${formatWhen(pick.start)}, meeting at ${pick.meetingSpot.split(",")[0]}. Want me to add it?`,
         events: [pick],
         proposal: { kind: "add_to_calendar", event: pick, withReminders: true },
         source: "nlp",
@@ -140,18 +189,15 @@ export function runIntent(req: PeachesRequest): PeachesResponse | null {
 
     const events = category === "running" ? nearbyClubs("running") : findEvents({ category, when: "any", limit: 3 });
     const beginners = events.filter((e) => e.beginnerFriendly).length;
-    const words = ["none", "one", "two", "three"];
-    const n = words[events.length] ?? String(events.length);
-    const b = words[beginners] ?? String(beginners);
+    const n = NUM[events.length] ?? String(events.length);
+    const b = NUM[beginners] ?? String(beginners);
     return {
       reply:
         events.length === 0
           ? "I couldn't find anything nearby yet."
-          : `I found ${n}. ${
-              beginners === events.length
-                ? "All of them are beginner-friendly."
-                : `${b[0].toUpperCase() + b.slice(1)} ${beginners === 1 ? "is" : "are"} beginner-friendly.`
-            }`,
+          : `I found ${n}: ${spokenList(events)}. ${
+              beginners === events.length ? "All of them are" : `${b[0].toUpperCase() + b.slice(1)} ${beginners === 1 ? "is" : "are"}`
+            } beginner-friendly.`,
       events,
       source: "nlp",
     };

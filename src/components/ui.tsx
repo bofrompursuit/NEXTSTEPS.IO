@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect } from "react";
 import { googleCalendarUrl, downloadIcs } from "@/lib/calendar";
@@ -36,18 +37,27 @@ export function Logo() {
   );
 }
 
+const PeachesAvatar = dynamic(() => import("./peaches/PeachesAvatar"), {
+  ssr: false,
+  loading: () => <span className="orb block h-full w-full" aria-hidden />,
+});
+
+const MOOD: Record<VoiceState, "idle" | "speaking" | "thinking"> = { idle: "idle", listening: "idle", thinking: "thinking", speaking: "speaking" };
+
 export function Orb({ state = "idle", size = 96, onClick, label = "Peaches" }: { state?: VoiceState; size?: number; onClick?: () => void; label?: string }) {
-  const Tag = onClick ? "button" : "div";
-  return (
-    <Tag
-      onClick={onClick}
-      aria-label={onClick ? label : undefined}
-      role={onClick ? undefined : "img"}
-      aria-roledescription={onClick ? undefined : "Peaches avatar"}
-      className="orb shrink-0"
-      data-state={state}
-      style={{ width: size, height: size }}
-    />
+  // Small sizes get extra headroom so the ears and tail fit.
+  const box = Math.round(size * 1.35);
+  const avatar = (
+    <span className="block" style={{ width: box, height: box, margin: -(box - size) / 2 }}>
+      <PeachesAvatar mood={MOOD[state]} wave={state === "listening"} size={box} />
+    </span>
+  );
+  return onClick ? (
+    <button onClick={onClick} aria-label={label} className="shrink-0 rounded-full">
+      {avatar}
+    </button>
+  ) : (
+    <span className="shrink-0">{avatar}</span>
   );
 }
 

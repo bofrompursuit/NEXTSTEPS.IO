@@ -8,6 +8,10 @@ import type { CalendarItem, ChatTurn, Entitlement, EventItem, Profile, Reminder,
 export type AppState = {
   profile: Profile;
   onboarded: boolean;
+  signedIn: boolean;
+  paywallSkipped: boolean;
+  /** Set when the user closes the app, so the next open picks up where they left off */
+  resumeNext: boolean;
   entitlement: Entitlement;
   trialStartedAt: string | null;
   planStartedAt: string | null;
@@ -36,6 +40,9 @@ export const EMPTY_PROFILE: Profile = {
 const INITIAL: AppState = {
   profile: EMPTY_PROFILE,
   onboarded: false,
+  signedIn: false,
+  paywallSkipped: false,
+  resumeNext: false,
   entitlement: "none",
   trialStartedAt: null,
   planStartedAt: null,
@@ -98,6 +105,14 @@ export function useAppState(): AppState {
 /** True after the client has read persisted state (avoids redirect flicker). */
 export function useHydrated(): boolean {
   return useSyncExternalStore(subscribe, () => true, () => false);
+}
+
+export function logIn() {
+  setState({ signedIn: true });
+}
+
+export function logOut() {
+  setState({ signedIn: false });
 }
 
 export function programWeek(s: AppState): number {

@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useState } from "react";
 import { Logo, Orb, Sparkle } from "@/components/ui";
 import { PRESET_TRANSITIONS } from "@/lib/transitions";
-import { useAppState, useHydrated } from "@/lib/store";
+import { logIn, logOut, useAppState, useHydrated } from "@/lib/store";
+import { useRouter } from "next/navigation";
 import { useVoice } from "@/lib/voice";
 
 const RIMS = ["rim-blue", "rim-peach", "rim-pink", "rim-mint", "rim-butter", "rim-peach"];
@@ -14,7 +15,14 @@ export default function Landing() {
   const hydrated = useHydrated();
   const voice = useVoice(() => {});
   const [said, setSaid] = useState(false);
-  const returning = hydrated && s.onboarded;
+  const router = useRouter();
+  const returning = hydrated && s.onboarded && s.signedIn;
+  const login = () => {
+    if (s.onboarded) {
+      logIn();
+      router.push("/home");
+    } else router.push("/start?login=1");
+  };
 
   const hello = () => {
     // Browsers block autoplay audio, so the hello plays on first tap.
@@ -30,9 +38,15 @@ export default function Landing() {
     <main className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 pb-10 pt-[max(1rem,env(safe-area-inset-top))]">
       <header className="flex items-center justify-between py-2">
         <Logo />
-        <Link href={returning ? "/home" : "/start?login=1"} className="btn-ghost text-sm">
-          Log in
-        </Link>
+        {returning ? (
+          <button onClick={logOut} className="btn-ghost text-sm">
+            Log out
+          </button>
+        ) : (
+          <button onClick={login} className="btn-ghost text-sm">
+            Log in
+          </button>
+        )}
       </header>
 
       <section className="flex flex-1 flex-col items-center justify-center gap-7 py-8 text-center lg:flex-row lg:gap-16 lg:text-left">

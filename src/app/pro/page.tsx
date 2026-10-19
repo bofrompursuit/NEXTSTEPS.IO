@@ -76,7 +76,7 @@ export default function Pro() {
           onClick={async () => {
             setBusy(true);
             await purchase("pro");
-            router.push("/home");
+            router.push(s.signedIn ? "/home" : "/");
           }}
         >
           {isPro ? "You're Pro 🎉" : supportsApplePay() ? " Pay · Go Pro" : <><Sparkle /> Go Pro</>}
